@@ -469,9 +469,9 @@ k = st.session_state["knowledge"]
 
 # ── Tabs ──────────────────────────────────────────────────────────────────
 tab_overview, tab_input, tab_modules, tab_endpoints, tab_complexity, \
-    tab_json, tab_qa, tab_telemetry = st.tabs([
+    tab_json, tab_qa, tab_security, tab_telemetry = st.tabs([
         "📋 Overview", "📂 Input", "📦 Modules", "🌐 Endpoints",
-        "📊 Complexity", "🗂️ Raw JSON", "💬 Q&A", "📡 Telemetry",
+        "📊 Complexity", "🗂️ Raw JSON", "💬 Q&A", "🔐 Security", "📡 Telemetry",
     ])
 
 
@@ -800,7 +800,116 @@ with tab_qa:
                         st.divider()
 
 
-# ── Tab 8: Telemetry ─────────────────────────────────────────────────────
+# ── Tab 8: Security ──────────────────────────────────────────────────────
+with tab_security:
+    import pandas as pd
+    from analyzer.security_scanner import scan_codebase
+
+    st.subheader("🔐 Security & Quality Scan")
+    st.caption("Detects hardcoded secrets, vulnerabilities, code smells, and coverage gaps")
+
+    # Run or load scan
+    sec_cache_key = "security_scan"
+    if sec_cache_key not in st.session_state:
+        with st.spinner("Scanning for secrets, vulnerabilities, and quality issues …"):
+            try:
+                cfg_sec = AnalyzerConfig()
+                from analyzer.code_reader import read_codebase as _rcb
+                from analyzer.java_parser import parse_java_file as _pjf
+                _files = read_codebase(repo_path, cfg_sec)
+                _classes = [c for f in _files for c in parse_java_file(f)]
+                _test_files = [f.path for f in _files if f.is_test]
+                _result = scan_codebase(_files, classes=_classes,
+                                         test_files=_test_files)
+                st.session_state[sec_cache_key] = _result
+            except Exception as e:
+                st.error(f"Scanner error: {e}")
+                st.stop()
+
+    scan = st.session_state[sec_cache_key]
+    summary = scan["summary"]
+    findings = scan["findings"]
+
+    # ── Summary metrics ───────────────────────────────────────────────────
+    SEV_COLORS = {
+        "critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵", "info": "⚪"
+    }
+    cols = st.columns(5)
+    for col, sev in zip(cols, ["critical", "high", "medium", "low", "info"]):
+        cnt = summary["by_severity"].get(sev, 0)
+        col.markdown(f"""<div class="metric-card">
+            <h3>{SEV_COLORS[sev]} {cnt}</h3><p>{sev.title()}</p>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Category breakdown ────────────────────────────────────────────────
+    if summary["by_category"]:
+        cat_cols = st.columns(len(summary["by_category"]))
+        for col, (cat, cnt) in zip(cat_cols, summary["by_category"].items()):
+            icons = {"secret": "🗝️", "vulnerability": "⚠️",
+                     "smell": "👃", "coverage_gap": "📉"}
+            col.metric(f"{icons.get(cat, '📌')} {cat.replace('_',' ').title()}", cnt)
+
+    if not findings:
+        st.success("✅ No issues found in this scan.")
+        st.stop()
+
+    # ── Filters ───────────────────────────────────────────────────────────
+    col1, col2 = st.columns(2)
+    with col1:
+        sev_filter = st.multiselect(
+            "Filter by severity",
+            ["critical", "high", "medium", "low", "info"],
+            default=["critical", "high", "medium"],
+        )
+    with col2:
+        cat_filter = st.multiselect(
+            "Filter by category",
+            list(summary["by_category"].keys()),
+            default=list(summary["by_category"].keys()),
+        )
+
+    visible = [f for f in findings
+               if f["severity"] in sev_filter and f["category"] in cat_filter]
+
+    st.caption(f"Showing {len(visible)} of {len(findings)} findings")
+
+    # ── Finding cards ─────────────────────────────────────────────────────
+    for f in visible:
+        sev_icon = SEV_COLORS.get(f["severity"], "⚪")
+        cat_badge = {
+            "secret":       ("🗝️", "#FAEEDA", "#854F0B"),
+            "vulnerability":("⚠️", "#FFEBEE", "#B71C1C"),
+            "smell":        ("👃", "#E8F5E9", "#2E7D32"),
+            "coverage_gap": ("📉", "#E3F2FD", "#0D47A1"),
+        }.get(f["category"], ("📌", "#F5F5F5", "#333"))
+
+        with st.expander(
+            f"{sev_icon} **{f['title']}** — `{f['file'].split('/')[-1]}` line {f['line']}",
+            expanded=(f["severity"] in ("critical", "high"))
+        ):
+            st.markdown(f"**Severity:** {f['severity'].upper()} &nbsp;|&nbsp; "
+                        f"**Category:** {f['category']} &nbsp;|&nbsp; "
+                        f"**Rule:** `{f['rule_id']}`")
+            st.markdown(f"**File:** `{f['file']}`" +
+                        (f" (line {f['line']})" if f["line"] else ""))
+            st.markdown(f"**What:** {f['description']}")
+            if f["snippet"]:
+                st.code(f["snippet"], language="java")
+            st.info(f"💡 **Fix:** {f['suggestion']}", icon="💡")
+
+    # ── Download ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.download_button(
+        "📥 Download security-report.json",
+        data=json.dumps(scan, indent=2),
+        file_name="security-report.json",
+        mime="application/json",
+    )
+
+
+# ── Tab 9: Telemetry ─────────────────────────────────────────────────────
 with tab_telemetry:
     from analyzer.telemetry import telemetry
     import pandas as pd

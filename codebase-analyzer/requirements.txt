@@ -1,5 +1,4 @@
 # Core analysis
-javalang>=0.13
 python-dotenv>=1.0
 pydantic>=2
 
@@ -25,3 +24,7 @@ pandas>=1.5
 
 # Diagram export (optional)
 cairosvg>=2.7
+
+# Java 17+ parser (replaces javalang)
+tree-sitter==0.21.3
+tree-sitter-java==0.21.0
