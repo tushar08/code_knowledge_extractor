@@ -1,0 +1,110 @@
+{
+  "project_overview": {
+    "purpose": "spring-rest-sakila is a Spring Boot 3 / Java 17 REST API service exposing the MySQL Sakila sample database (a DVD rental store: films, actors, customers, stores, rentals, payments). It is a sample/reference project demonstrating production-grade patterns for building a hypermedia-driven, secured CRUD API over a relational domain.",
+    "functionality": [
+      "Full CRUD endpoints for the core Sakila domain: films, actors, customers, addresses/cities/countries, payments, rentals, staff, and stores (70 REST endpoints across 10 controllers)",
+      "Composite read models (e.g. film details, customer details, staff details) built from JPA projections and Querydsl queries",
+      "Reporting endpoints (sales by category, sales by store) under /reports",
+      "JWT-based stateless authentication via a /login endpoint, with role-based authorization (@Secured with ROLE_READ / ROLE_MANAGE) on every controller method",
+      "HATEOAS responses: every resource is wrapped in a representation model with self/related links via dedicated RepresentationModelAssemblers",
+      "Pagination, sorting, and filter options (e.g. film category/release-year/rating filters) on collection endpoints",
+      "Redis-backed caching configuration and Spring Actuator + Prometheus observability",
+      "API documentation generated from tests via Spring REST Docs, exported to OpenAPI 3 and Postman collections"
+    ],
+    "architecture": "Layered architecture organized as a modular monolith: eight vertically sliced service packages (auth, catalog, customer, location, payment, rental, staff, store), each containing its own controller -> service -> repository -> domain (entity/dto/mapper/converter) stack, plus shared 'common' (base entities/DTOs, security, filters, exceptions, utilities) and 'config' (security, persistence, Redis, logging) packages. The slicing mirrors the author's companion microservices version, making each slice extractable. Controllers depend on service interfaces; implementations combine Spring Data JPA repositories with custom Querydsl repositories for complex queries; MapStruct mappers translate between entities and DTOs; HATEOAS assemblers shape the HTTP representation.",
+    "technology_stack": [
+      "Spring Boot Web MVC - REST endpoints",
+      "Spring Data JPA + Hibernate (MySQL 8) - persistence",
+      "Querydsl - type-safe custom queries and projections",
+      "Spring HATEOAS - hypermedia representation models and link building",
+      "Spring Security + JJWT - stateless JWT authentication and role-based authorization",
+      "Spring Data Redis - caching",
+      "MapStruct - compile-time entity/DTO mapping",
+      "Lombok - boilerplate reduction (constructors, builders, equals/hashCode)",
+      "Spring REST Docs + epages restdocs-api-spec - test-driven API docs, OpenAPI/Postman export",
+      "Spring Actuator + Prometheus - metrics and observability",
+      "Gradle (Kotlin DSL) with version catalogs; Kotlin kapt for annotation processing"
+    ],
+    "design_patterns": [
+      "Layered architecture with vertical (feature) slicing per bounded context",
+      "Repository pattern, extended with the custom-repository-fragment pattern (Custom*Repository + Impl) for Querydsl queries",
+      "DTO + Mapper (MapStruct) pattern separating persistence entities from API models",
+      "Assembler pattern (Spring HATEOAS RepresentationModelAssembler) for hypermedia output",
+      "Service interface / implementation separation enabling testability",
+      "Builder pattern (Lombok @Builder) for DTOs and filter options",
+      "Filter chain pattern for JWT authentication and request logging",
+      "Attribute Converter pattern (JPA @Converter) for enum-to-column mappings such as film rating and special features"
+    ],
+    "noteworthy_aspects": [
+      "Low overall complexity: average cyclomatic complexity 1.87 across 579 methods; 88% of methods are trivial (cc 1-4), consistent with thin controllers and delegation-heavy services",
+      "All 12 methods with cc > 10 are equals() implementations on large DTOs/entities (max cc 16 on Film/FilmEntity) - generated-style field-by-field comparisons, a maintenance smell that Lombok @EqualsAndHashCode could eliminate",
+      "Security is enforced uniformly: every controller handler carries @Secured, and JWT validation is implemented as a dedicated filter + AuthenticationProvider pair rather than ad-hoc checks",
+      "Strong consistency across the eight service slices (same package layout, naming, and assembler/mapper conventions) makes the codebase highly predictable and a good template for code generation",
+      "Heavy use of compile-time tooling (MapStruct, Querydsl APT, Lombok) shifts complexity out of runtime code but couples the build to annotation processing (kapt)",
+      "Documentation is test-driven (REST Docs), so API docs can only drift if tests fail - a notable best practice",
+      "No service-layer business invariants beyond CRUD orchestration: domain logic largely lives in the database model, which is typical for Sakila samples but limits the project as a DDD reference"
+    ]
+  },
+  "class_summaries": {
+    "com.example.app.App": "Spring Boot application entry point; bootstraps the entire service.",
+    "com.example.app.services.auth.controller.LoginController": "Authentication endpoint: accepts user credentials at POST /login, delegates to the user-details and security services, and returns a signed JWT for use on subsequent requests.",
+    "com.example.app.services.auth.service.JpaUserDetailsService": "Spring Security UserDetailsService backed by the JPA user repository; loads user accounts and their roles for authentication.",
+    "com.example.app.services.auth.service.SecurityService": "Thin authentication facade that wraps a JWT and user details into a JwtAuthenticationToken and submits it to the AuthenticationManager.",
+    "com.example.app.common.security.JwtTokenProvider": "Creates and validates signed JWTs (issuer, expiry, role claims) using the JJWT library; the cryptographic core of the auth subsystem.",
+    "com.example.app.common.security.JwtAuthenticationFilter": "Servlet filter that extracts the Bearer token from incoming requests and triggers token authentication before the request reaches controllers.",
+    "com.example.app.common.security.JwtAuthenticationProvider": "AuthenticationProvider that verifies JwtAuthenticationToken instances against the token provider, establishing the security context.",
+    "com.example.app.common.security.JwtAuthenticationToken": "Spring Security Authentication implementation carrying the raw JWT plus principal and granted authorities.",
+    "com.example.app.config.SecurityFilterConfig": "Defines the SecurityFilterChain: stateless session policy, endpoint authorization rules, and registration of the JWT authentication filter.",
+    "com.example.app.config.AuthConfig": "Authentication wiring: exposes the PasswordEncoder and AuthenticationManager beans used by login and the JWT provider.",
+    "com.example.app.config.PersistenceConfig": "JPA/Querydsl configuration, including the shared JPAQueryFactory bean and auditing setup.",
+    "com.example.app.config.RedisConfig": "Configures the Redis connection and cache manager used for response/entity caching.",
+    "com.example.app.config.LoggingFilterConfig": "Registers the request/response logging filter for HTTP traffic observability.",
+    "com.example.app.services.catalog.controller.ActorController": "REST controller for /actors: paged actor listing, CRUD, and nested film resources for an actor, each secured by role and rendered through HATEOAS assemblers.",
+    "com.example.app.services.catalog.controller.FilmController": "REST controller for /films: filtered/paged film listing (category, release year, rating), film CRUD, film details, rental price lookup, and nested actor sub-resources; read operations require ROLE_READ, mutations ROLE_MANAGE.",
+    "com.example.app.services.catalog.service.ActorServiceImpl": "Catalog service orchestrating actor CRUD and actor-film queries across the JPA and custom Querydsl repositories, mapping entities to DTOs.",
+    "com.example.app.services.catalog.service.FilmServiceImpl": "Catalog service implementing film CRUD, filtered listing, film-details projections, and rental price retrieval by combining standard and custom repositories with MapStruct mapping.",
+    "com.example.app.services.customer.controller.CustomerController": "REST controller for /customers covering customer CRUD plus customer details, address, payment, and rental sub-resources.",
+    "com.example.app.services.customer.service.CustomerServiceImpl": "Service layer for customer management; coordinates customer repositories and mappers and exposes composite customer-details views.",
+    "com.example.app.services.location.controller.LocationController": "REST controller for location resources (addresses, cities, countries) with paged listing and lookups.",
+    "com.example.app.services.location.service.LocationServiceImpl": "Service aggregating address/city/country repositories to serve location queries and composite address details.",
+    "com.example.app.services.payment.controller.PaymentController": "REST controller for /payments: paged payment listing, lookup, creation and deletion.",
+    "com.example.app.services.payment.service.PaymentServiceImpl": "Service handling payment CRUD and customer/staff payment queries via JPA and Querydsl repositories.",
+    "com.example.app.services.rental.controller.RentalController": "REST controller for /rentals supporting rental listing, lookup, creation (rent) and update (return) flows.",
+    "com.example.app.services.rental.service.RentalServiceImpl": "Service implementing the rental lifecycle - creating rentals, recording returns, and querying rental history.",
+    "com.example.app.services.staff.controller.StaffController": "REST controller for /staffs exposing staff CRUD and staff-details composite views.",
+    "com.example.app.services.staff.service.StaffServiceImpl": "Service layer for staff management combining staff repositories, custom queries, and DTO mapping.",
+    "com.example.app.services.store.controller.StoreController": "REST controller for /stores: store listing, lookup, CRUD, and nested staff/details sub-resources.",
+    "com.example.app.services.store.controller.ReportController": "Read-only reporting controller under /reports exposing sales-by-category and sales-by-store aggregations.",
+    "com.example.app.services.store.service.StoreServiceImpl": "Service orchestrating store CRUD and store-details queries.",
+    "com.example.app.services.store.service.ReportServiceImpl": "Service computing sales aggregation reports through custom Querydsl repository queries.",
+    "com.example.app.common.exception.GlobalExceptionHandler": "Centralized @RestControllerAdvice translating application exceptions into consistent HTTP error responses."
+  },
+  "module_observations": {
+    "services.auth": [
+      "Authentication is cleanly separated: controller handles HTTP, JpaUserDetailsService handles lookup, SecurityService handles token authentication, and JWT mechanics live in common.security.",
+      "Role model is coarse (READ/MANAGE), applied declaratively via @Secured constants."
+    ],
+    "services.catalog": [
+      "Largest slice (62 types): films and actors with nested sub-resources, attribute converters for rating/special-features enums, and Querydsl projections for film details.",
+      "DTO equals() methods here are the project's top complexity hotspots (cc up to 16)."
+    ],
+    "services.customer": ["Composite CustomerDetails projection joins customer, address, and activity data through a custom repository."],
+    "services.location": ["Address/city/country hierarchy with converters for country/language enums; serves as the shared location backbone for customer, staff, and store slices."],
+    "services.payment": ["Straightforward CRUD slice; queries support filtering payments by customer and staff."],
+    "services.rental": ["Encodes the rent/return lifecycle; uses a value-object package (vo) for rental status concepts."],
+    "services.staff": ["Mirrors the customer slice structure with staff-details composite views."],
+    "services.store": ["Hosts both store resource endpoints and the cross-cutting sales ReportController."],
+    "common": ["Shared kernel: base entity/DTO types with auditing, JWT security components, logging filter, global exception handling, and serializers - reused by every slice."],
+    "config": ["All framework wiring (security chain, persistence/Querydsl, Redis cache, logging) is isolated here, keeping slices framework-light."]
+  },
+  "method_descriptions": {
+    "com.example.app.services.catalog.controller.FilmController#getFilmList": "Returns a paged, HATEOAS-wrapped list of films, optionally filtered by category, release year, and rating (ROLE_READ).",
+    "com.example.app.services.catalog.controller.FilmController#addFilm": "Creates a new film from the request body and responds 201 with a Location header pointing at the created resource (ROLE_MANAGE).",
+    "com.example.app.services.catalog.controller.FilmController#getFilm": "Fetches a single film by id, returning 404 when absent (ROLE_READ).",
+    "com.example.app.services.catalog.controller.FilmController#updateFilm": "Updates an existing film with the supplied request payload (ROLE_MANAGE).",
+    "com.example.app.services.catalog.controller.FilmController#deleteFilm": "Deletes the film identified by filmId (ROLE_MANAGE).",
+    "com.example.app.services.auth.service.SecurityService#authenticateToken": "Wraps the JWT and user identity into a JwtAuthenticationToken and authenticates it via the AuthenticationManager.",
+    "com.example.app.config.AuthConfig#passwordEncoder": "Exposes the PasswordEncoder bean used to hash and verify user credentials.",
+    "com.example.app.config.AuthConfig#authenticationManager": "Builds the AuthenticationManager bean that backs login and JWT verification."
+  }
+}

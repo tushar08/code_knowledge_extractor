@@ -1,0 +1,27 @@
+# Core analysis
+javalang>=0.13
+python-dotenv>=1.0
+pydantic>=2
+
+# LLM orchestration (LangChain)
+langchain>=0.2
+langchain-anthropic>=0.1
+
+# Anthropic SDK (direct — for accurate token counts in Q&A)
+anthropic>=0.50
+
+# Q&A layer (LlamaIndex)
+llama-index-core>=0.14
+llama-index-retrievers-bm25>=0.6
+# optional — uncomment for synthesized Q&A answers:
+# llama-index-llms-anthropic>=0.7
+# optional — uncomment for vector retrieval:
+# llama-index-embeddings-huggingface
+# llama-index-embeddings-openai
+
+# Web UI
+streamlit>=1.30
+pandas>=1.5
+
+# Diagram export (optional)
+cairosvg>=2.7
