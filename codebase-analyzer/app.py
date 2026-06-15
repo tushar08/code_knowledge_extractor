@@ -80,6 +80,36 @@ st.markdown("""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Admin panel routing  (?admin=1 in URL)
+# ═══════════════════════════════════════════════════════════════════════════
+_qp = st.query_params
+if _qp.get("admin") == "1":
+    # Resolve API key and model for the admin panel
+    _cfg_adm = AnalyzerConfig()
+    _adm_api_key = st.sidebar.text_input(
+        "Anthropic API key (admin)",
+        value=_cfg_adm.anthropic_api_key or "",
+        type="password", key="adm_api_key",
+    )
+    _adm_model = st.sidebar.selectbox(
+        "Model (admin)", ["claude-sonnet-4-6", "claude-haiku-4-5"],
+        key="adm_model",
+    )
+    if _adm_api_key:
+        _adm_api_key = _adm_api_key.strip()
+    st.sidebar.caption("🔒 Admin mode active")
+    st.sidebar.markdown(
+        "[← Back to app](?)"
+        " &nbsp; | &nbsp; "
+        "[Direct URL](?admin=1)",
+        unsafe_allow_html=True,
+    )
+    import admin_panel
+    admin_panel.render(api_key=_adm_api_key, model=_adm_model)
+    st.stop()  # skip the main app entirely
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Git helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -381,17 +411,44 @@ with st.sidebar:
         st.caption("✅ API key provided")
     else:
         st.caption("ℹ️ No key — will use heuristic extractor (free, lower quality)")
-    model = st.selectbox("Model", [
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
-    ], index=0)
+
+    from analyzer.model_utils import resolve_model, CURRENT_MODELS
+    model_input = st.selectbox("Model", sorted(CURRENT_MODELS), index=0)
+    resolved_model, was_aliased = resolve_model(model_input)
+    model = resolved_model
+    if was_aliased:
+        st.warning(f"⚠️ Auto-corrected to `{resolved_model}`", icon="⚠️")
+
     temperature = st.slider("Temperature", 0.0, 1.0, cfg.temperature, 0.1)
 
     # ── Token budget ──────────────────────────────────────────────────
     st.subheader("Token budget")
-    max_tokens = st.number_input("Max tokens per chunk",
-                                 value=cfg.max_tokens_per_chunk,
-                                 min_value=2000, max_value=50000, step=1000)
+    max_tokens = st.number_input(
+        "Max input tokens per chunk",
+        value=cfg.max_tokens_per_chunk,
+        min_value=1000, max_value=50000, step=1000,
+        help="Classes per chunk are packed to stay under this limit. "
+             "Lower = more chunks, smaller each. Higher = fewer chunks, risk of truncation.",
+    )
+    max_out_tokens = st.number_input(
+        "Max output tokens per call",
+        value=cfg.max_output_tokens,
+        min_value=1024, max_value=64000, step=1024,
+        help="Must be ≥ max_input * 0.6 to avoid truncation errors. "
+             "claude-sonnet-4-6 supports up to 64K.",
+    )
+    # Live ratio warning
+    recommended = int(max_tokens * 0.6)
+    if max_out_tokens < recommended:
+        st.warning(
+            f"⚠️ Output budget ({max_out_tokens:,}) may be too small for chunks of "
+            f"{max_tokens:,} input tokens. Recommend ≥ {recommended:,}. "
+            "The pipeline will auto-retry by splitting oversized chunks, "
+            "but this costs extra API calls.",
+            icon="⚠️",
+        )
+    else:
+        st.caption(f"✅ Token ratio OK (input {max_tokens:,} · output {max_out_tokens:,})")
 
     # ── Options ───────────────────────────────────────────────────────
     st.subheader("Options")
@@ -413,40 +470,83 @@ def metric_card(label: str, value, col):
     </div>""", unsafe_allow_html=True)
 
 
+def _show_llm_error(exc: Exception, model: str):
+    """Render a structured, actionable LLM error in the UI."""
+    from analyzer.model_utils import friendly_api_error
+    from analyzer.llm import LLMUnavailableError
+    msg = exc.args[0] if exc.args else str(exc)
+    # LLMUnavailableError already has a formatted message
+    if isinstance(exc, LLMUnavailableError):
+        st.error(msg)
+    else:
+        st.error(friendly_api_error(exc, model))
+    with st.expander("Technical details"):
+        import traceback
+        st.code(traceback.format_exc())
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Run pipeline
 # ═══════════════════════════════════════════════════════════════════════════
 
 if run_button:
+    from analyzer.model_utils import resolve_model as _rm
+    model, _ = _rm(model)          # final safety resolve before API call
     if api_key:
         os.environ["ANTHROPIC_API_KEY"] = api_key
     os.environ["LLM_MODEL"] = model
     os.environ["LLM_TEMPERATURE"] = str(temperature)
     os.environ["MAX_TOKENS_PER_CHUNK"] = str(max_tokens)
+    os.environ["LLM_MAX_OUTPUT_TOKENS"] = str(max_out_tokens)
     os.environ["INCLUDE_TESTS"] = str(include_tests).lower()
     os.environ["OUTPUT_PATH"] = output_path
 
     progress_bar = st.progress(0, text="Starting ...")
+    warn_placeholder = st.empty()   # live warning banner during the run
+
+    llm_warnings: list = []
 
     def on_progress(stage, detail, pct):
+        is_warn = detail.startswith("⚠️") or "warning" in detail.lower() \
+                  or "failed" in detail.lower() or "heuristic" in detail.lower()
+        if is_warn:
+            llm_warnings.append(detail)
+            warn_placeholder.warning(f"⚠️ {detail}", icon="⚠️")
+        else:
+            warn_placeholder.empty()
         progress_bar.progress(min(pct, 1.0), text=f"**[{stage}]** {detail}")
 
+    # The pipeline NEVER raises for LLM issues — it always returns a complete dict
     try:
         knowledge = run_pipeline(repo_path, output_path, include_tests,
                                  progress_cb=on_progress)
-        st.session_state["knowledge"] = knowledge
-        progress_bar.progress(1.0, text="**Done!**")
-        st.success(
-            f"Analysis complete — "
-            f"{Path(output_path).stat().st_size // 1024} KB "
-            f"written to `{output_path}`"
-        )
     except Exception as e:
-        st.error(f"Pipeline failed: {e}")
-        import traceback
-        with st.expander("Traceback"):
-            st.code(traceback.format_exc())
+        # Only truly unexpected errors (disk full, parse crash, etc.) reach here
+        progress_bar.empty()
+        warn_placeholder.empty()
+        _show_llm_error(e, model)
         st.stop()
+
+    st.session_state["knowledge"] = knowledge
+    warn_placeholder.empty()
+    progress_bar.progress(1.0, text="**Done!**")
+
+    # Surface any collected warnings as a persistent banner
+    run_warnings = knowledge.get("metadata", {}).get("warnings", []) or llm_warnings
+    if run_warnings:
+        with st.expander(f"⚠️ {len(run_warnings)} warning(s) during analysis "
+                         f"— structural data is complete", expanded=True):
+            for w in run_warnings:
+                st.warning(w, icon="⚠️")
+            st.info(
+                "💡 The output below contains all structural information "
+                "(classes, endpoints, complexity, dependencies). "
+                "Classes where the LLM failed show heuristic descriptions instead.",
+                icon="💡",
+            )
+    else:
+        size_kb = Path(output_path).stat().st_size // 1024
+        st.success(f"Analysis complete — {size_kb} KB written to `{output_path}`")
 
 # Load from disk if a previous run exists
 if "knowledge" not in st.session_state and Path(output_path).exists():
@@ -469,9 +569,10 @@ k = st.session_state["knowledge"]
 
 # ── Tabs ──────────────────────────────────────────────────────────────────
 tab_overview, tab_input, tab_modules, tab_endpoints, tab_complexity, \
-    tab_json, tab_qa, tab_security, tab_telemetry = st.tabs([
+    tab_json, tab_qa, tab_security, tab_deps, tab_telemetry = st.tabs([
         "📋 Overview", "📂 Input", "📦 Modules", "🌐 Endpoints",
-        "📊 Complexity", "🗂️ Raw JSON", "💬 Q&A", "🔐 Security", "📡 Telemetry",
+        "📊 Complexity", "🗂️ Raw JSON", "💬 Q&A",
+        "🔐 Security", "🔗 Dependencies & Flow", "📡 Telemetry",
     ])
 
 
@@ -479,6 +580,25 @@ tab_overview, tab_input, tab_modules, tab_endpoints, tab_complexity, \
 with tab_overview:
     ov = k.get("project_overview", {})
     stats = k.get("statistics", {}).get("totals", {})
+
+    # ── LLM warning banner ────────────────────────────────────────────────
+    _meta_warnings = k.get("metadata", {}).get("warnings", [])
+    _llm_meta = k.get("metadata", {}).get("llm", {})
+    _chunks_warn = _llm_meta.get("chunks_heuristic", 0)
+    _chunks_total = _llm_meta.get("chunks_total", 0)
+    if _meta_warnings or _chunks_warn:
+        with st.expander(
+            f"⚠️ Analysis ran with {len(_meta_warnings)} warning(s) — "
+            f"{_chunks_warn}/{_chunks_total} chunks used heuristic descriptions",
+            expanded=False,
+        ):
+            st.markdown(
+                "Structural data (classes, endpoints, complexity) is **complete and accurate**. "
+                "Some class summaries and method descriptions below are heuristic "
+                "(convention-based) rather than LLM-generated."
+            )
+            for w in _meta_warnings:
+                st.warning(w, icon="⚠️")
 
     cols = st.columns(5)
     for col, (label, key) in zip(cols, [
@@ -765,14 +885,8 @@ with tab_qa:
                     f"est. cost: ${(usage['input_tokens']*3 + usage['output_tokens']*15)/1_000_000:.5f}"
                 )
             except Exception as e:
-                err_msg = str(e)
-                if "401" in err_msg or "authentication" in err_msg.lower():
-                    st.error("**Invalid API key.** Check the sidebar — "
-                             "key should start with `sk-ant-`.")
-                else:
-                    st.warning(f"Synthesis unavailable ({e}). "
-                               "Showing best source below.")
-                # Show best hit as fallback
+                _show_llm_error(e, model)
+                st.info("Showing best matching source from the knowledge base instead:")
                 best = hits[0]
                 st.markdown("### 📄 Best matching source")
                 st.code(best.node.get_content(), language="text")
@@ -909,7 +1023,218 @@ with tab_security:
     )
 
 
-# ── Tab 9: Telemetry ─────────────────────────────────────────────────────
+# ── Tab 9: Dependencies & Code Flow ──────────────────────────────────────
+with tab_deps:
+    import pandas as pd
+    from analyzer.dependency_analyser import analyse as dep_analyse
+
+    st.subheader("🔗 Downstream Dependencies & Code Flow")
+    st.caption("Detects databases, caches, REST clients, messaging, and traces "
+               "controller → service → repository → DB per endpoint")
+
+    # Run or cache
+    if "dep_analysis" not in st.session_state:
+        with st.spinner("Analysing downstream dependencies and tracing code flows …"):
+            try:
+                _cfg = AnalyzerConfig()
+                _files = read_codebase(repo_path, _cfg)
+                _classes = [c for f in _files for c in parse_java_file(f)]
+                st.session_state["dep_analysis"] = dep_analyse(_files, _classes)
+            except Exception as e:
+                st.error(f"Analysis error: {e}")
+                st.stop()
+
+    da = st.session_state["dep_analysis"]
+    deps    = da["dependencies"]
+    ep_flows = da["endpoint_flows"]
+    cs_flows = da["consumer_flows"]
+
+    # ── Dependency overview cards ──────────────────────────────────────────
+    KIND_ICONS = {
+        "database":   ("🗄️", "#E3F2FD", "#0D47A1"),
+        "cache":      ("⚡", "#E8F5E9", "#1B5E20"),
+        "rest_client":("🌐", "#FFF3E0", "#E65100"),
+        "messaging":  ("📨", "#F3E5F5", "#4A148C"),
+        "async":      ("⚙️", "#FAFAFA", "#424242"),
+        "external":   ("🔌", "#FCE4EC", "#880E4F"),
+    }
+    by_kind: dict = {}
+    for d in deps["dependencies"]:
+        by_kind.setdefault(d["kind"], []).append(d)
+
+    if not by_kind:
+        st.info("No downstream integrations detected (REST clients, Kafka, etc.). "
+                "JPA repositories and Redis are shown below.")
+
+    # Cards row
+    if by_kind:
+        cols = st.columns(len(by_kind))
+        for col, (kind, items) in zip(cols, by_kind.items()):
+            icon, bg, fg = KIND_ICONS.get(kind, ("📌", "#F5F5F5", "#333"))
+            unique_types = list({i["sub_type"] for i in items})
+            col.markdown(
+                f'<div style="background:{bg};border-radius:10px;padding:12px 14px;'
+                f'border:1px solid {fg}30">'
+                f'<div style="font-size:22px">{icon}</div>'
+                f'<div style="font-size:18px;font-weight:500;color:{fg}">{len(unique_types)}</div>'
+                f'<div style="font-size:12px;color:{fg};opacity:.8">'
+                f'{kind.replace("_"," ").title()}</div>'
+                f'<div style="font-size:11px;color:{fg};opacity:.6;margin-top:4px">'
+                f'{", ".join(unique_types[:3])}</div></div>',
+                unsafe_allow_html=True
+            )
+
+    st.markdown("---")
+
+    # ── Dependency detail table ────────────────────────────────────────────
+    dep_col, table_col = st.columns([3, 2])
+
+    with dep_col:
+        st.subheader("Integration inventory")
+        if deps["dependencies"]:
+            rows = [{
+                "Kind":      d["kind"].replace("_", " ").title(),
+                "Type":      d["sub_type"],
+                "Direction": d["direction"],
+                "Detail":    d["detail"] or "—",
+                "File":      d["file"].split("/")[-1],
+            } for d in deps["dependencies"]]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                         hide_index=True, height=280)
+        else:
+            st.info("No outbound integrations detected beyond JPA/Redis.")
+
+    with table_col:
+        st.subheader(f"Database tables ({len(deps['db_tables'])})")
+        if deps["db_tables"]:
+            tbl_rows = [{
+                "Schema": t["schema"],
+                "Table":  t["table"],
+                "Entity": t["file"].split("/")[-1].replace(".java", ""),
+            } for t in sorted(deps["db_tables"], key=lambda x: x["table"])]
+            st.dataframe(pd.DataFrame(tbl_rows), use_container_width=True,
+                         hide_index=True, height=280)
+
+    # ── Kafka consumers ────────────────────────────────────────────────────
+    if cs_flows:
+        st.markdown("---")
+        st.subheader(f"📨 Message consumers ({len(cs_flows)})")
+        for cf in cs_flows:
+            with st.expander(f"**{cf['kind'].upper()}** → `{cf['topic']}`  "
+                             f"[{cf['consumer_class']}.{cf['handler']}]"):
+                if cf.get("group_id"):
+                    st.caption(f"Group ID: `{cf['group_id']}`")
+                for step in cf["steps"]:
+                    _icon = {"messaging": "📨", "service": "⚙️", "repository": "🗄️",
+                             "db": "💾"}.get(step["layer"], "→")
+                    st.markdown(f"{_icon} **{step['layer']}** · "
+                                f"`{step['class']}.{step['method']}` "
+                                f"— {step['detail']}")
+
+    # ── Code flow per endpoint ─────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader(f"🔁 Code flow — {len(ep_flows)} endpoints")
+
+    VERB_COLORS = {
+        "GET": "#22863a", "POST": "#0366d6", "PUT": "#e36209",
+        "DELETE": "#cb2431", "PATCH": "#6f42c1", "ANY": "#5f5e5a",
+    }
+    LAYER_ICONS = {
+        "controller": "🎮", "service": "⚙️",
+        "repository": "📁", "db": "🗄️", "cache": "⚡", "messaging": "📨",
+    }
+
+    # Filter controls
+    fc1, fc2, fc3 = st.columns([2, 2, 2])
+    with fc1:
+        verb_filter = st.multiselect("HTTP method", ["GET","POST","PUT","DELETE","PATCH"],
+                                     default=["GET","POST","PUT","DELETE","PATCH"])
+    with fc2:
+        ctrl_names = sorted({f["controller"] for f in ep_flows})
+        ctrl_filter = st.multiselect("Controller", ctrl_names, default=ctrl_names[:3])
+    with fc3:
+        show_only_with_db = st.checkbox("Only show endpoints with DB access", value=False)
+
+    visible_flows = [
+        f for f in ep_flows
+        if f["http_method"] in verb_filter
+        and f["controller"] in ctrl_filter
+        and (not show_only_with_db or f["db_tables"])
+    ]
+
+    st.caption(f"Showing {len(visible_flows)} of {len(ep_flows)} endpoints")
+
+    for ef in visible_flows:
+        verb_color = VERB_COLORS.get(ef["http_method"], "#5f5e5a")
+        badge = (f'<span style="background:{verb_color};color:white;padding:2px 8px;'
+                 f'border-radius:4px;font-size:12px;font-weight:600;margin-right:6px">'
+                 f'{ef["http_method"]}</span>')
+
+        cache_tag = (f' ⚡ `{", ".join(ef["cache_ops"])}`' if ef["cache_ops"] else "")
+        db_tag    = (f' 🗄️ `{", ".join(ef["db_tables"])}`' if ef["db_tables"] else "")
+
+        with st.expander(
+            f"{ef['http_method']} {ef['path']}  "
+            f"[{ef['controller']}.{ef['handler']}]"
+            + (" ⚡" if ef["cache_ops"] else "")
+            + (" 🗄️" if ef["db_tables"] else ""),
+            expanded=False,
+        ):
+            st.markdown(
+                f"{badge} **`{ef['path']}`** &nbsp; "
+                f"handler: `{ef['controller']}.{ef['handler']}()`"
+                + (f"<br>🔒 Roles: `{'`, `'.join(ef['security'])}`" if ef["security"] else ""),
+                unsafe_allow_html=True,
+            )
+
+            # Visual flow chain
+            if ef["steps"]:
+                st.markdown("**Call chain:**")
+                chain_parts = []
+                prev_layer = None
+                for step in ef["steps"]:
+                    icon = LAYER_ICONS.get(step["layer"], "→")
+                    sep = " → " if prev_layer else ""
+                    label = f"{icon} `{step['class']}`"
+                    if step["method"]:
+                        label += f".**{step['method']}**()"
+                    if step["detail"]:
+                        label += f" *{step['detail']}*"
+                    chain_parts.append(sep + label)
+                    prev_layer = step["layer"]
+
+                # Render as indented steps instead of one long line
+                for i, step in enumerate(ef["steps"]):
+                    icon = LAYER_ICONS.get(step["layer"], "→")
+                    indent = "  " * min(i, 3)
+                    method_str = f"`.{step['method']}()`" if step["method"] else ""
+                    detail_str = f" — *{step['detail']}*" if step["detail"] else ""
+                    file_str   = (f" `{step['file'].split('/')[-1]}`"
+                                  if step["file"] else "")
+                    st.markdown(
+                        f"{indent}{icon} **{step['layer'].title()}** · "
+                        f"`{step['class']}`{method_str}{detail_str}{file_str}"
+                    )
+
+            # Summary line
+            if ef["db_tables"] or ef["cache_ops"]:
+                parts = []
+                if ef["db_tables"]:
+                    parts.append(f"🗄️ Tables: `{'`, `'.join(ef['db_tables'])}`")
+                if ef["cache_ops"]:
+                    parts.append(f"⚡ Cache: `{'`, `'.join(ef['cache_ops'])}`")
+                st.info("  ·  ".join(parts))
+
+    # ── Download ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    import json as _json
+    st.download_button("📥 Download dependency-report.json",
+                       data=_json.dumps(da, indent=2),
+                       file_name="dependency-report.json",
+                       mime="application/json")
+
+
+# ── Tab 10: Telemetry ─────────────────────────────────────────────────────
 with tab_telemetry:
     from analyzer.telemetry import telemetry
     import pandas as pd

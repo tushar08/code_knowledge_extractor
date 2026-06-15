@@ -118,9 +118,9 @@ All settings live in `.env` (copy from `.env.example`):
 | Variable | Default | What it controls |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | *(empty)* | Your Anthropic key. Must start with `sk-ant-`. Without it, the heuristic extractor runs instead. |
-| `LLM_MODEL` | `claude-sonnet-4-20250514` | Which Claude model to call. Switch to `claude-haiku-4-5-20251001` for ~5× lower cost. |
+| `LLM_MODEL` | `claude-sonnet-4-6` | Which Claude model to call. Switch to `claude-haiku-4-5` for ~5× lower cost. |
 | `LLM_TEMPERATURE` | `0.0` | Randomness of LLM output. Keep at `0` for deterministic, reproducible results. |
-| `LLM_MAX_OUTPUT_TOKENS` | `4096` | Maximum tokens Claude writes per response. Lowering risks truncated JSON schemas. |
+| `LLM_MAX_OUTPUT_TOKENS` | `20000` | Maximum tokens Claude writes per response. Lowering risks truncated JSON schemas. |
 | `MAX_TOKENS_PER_CHUNK` | `12000` | Token budget per LLM call. Lower = more calls, smaller each. Higher = fewer calls, more expensive. |
 | `CHARS_PER_TOKEN` | `3.5` | Characters-per-token estimate. Deliberately conservative — Java source is denser than prose. |
 | `REPO_PATH` | *(empty)* | Default repository path for the CLI. The web UI uses its own clone screen. |

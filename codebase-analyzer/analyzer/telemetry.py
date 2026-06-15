@@ -126,17 +126,35 @@ class Telemetry:
         }
 
     def events_list(self) -> list:
-        return [asdict(e) for e in self.events]
+        """Serialize events to dicts, including computed @property fields.
+
+        `asdict()` only serialises dataclass fields — it silently skips
+        @property members like `cost_usd` and `total_tokens`. We add them
+        manually so the Streamlit telemetry table and the persisted JSON
+        both have the values they expect.
+        """
+        out = []
+        for e in self.events:
+            d = asdict(e)                       # fields only
+            d["cost_usd"]     = e.cost_usd      # add computed property
+            d["total_tokens"] = e.total_tokens  # add computed property
+            out.append(d)
+        return out
 
     # ── Persistence ───────────────────────────────────────────────────────
     def set_persist_path(self, path: str):
         self._persist_path = Path(path)
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        # Load existing events
+        # Load existing events — strip computed properties before reconstructing
         if self._persist_path.exists():
             try:
                 data = json.loads(self._persist_path.read_text())
-                self.events = [TokenEvent(**e) for e in data.get("events", [])]
+                _fields = {"call_type", "module", "input_tokens",
+                           "output_tokens", "cached", "timestamp"}
+                self.events = [
+                    TokenEvent(**{k: v for k, v in e.items() if k in _fields})
+                    for e in data.get("events", [])
+                ]
             except Exception:
                 pass
 

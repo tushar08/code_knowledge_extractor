@@ -147,7 +147,7 @@ SYNTH_PROMPT = (
 
 
 def answer(question: str, retrieved: List[NodeWithScore],
-           llm_model: str = "claude-sonnet-4-20250514",
+           llm_model: str = "claude-sonnet-4-6",
            api_key: str = "") -> Tuple[str, dict]:
     """Synthesize an answer from retrieved nodes.
 
